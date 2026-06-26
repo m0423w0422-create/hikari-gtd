@@ -1195,9 +1195,8 @@ function DailySchedule({tasks, completeTask, upd}) {
     }
   },[]);
 
-  // リマインダーチェック（30秒ごと）＋SWにタスクデータを常時送信
+  // リマインダーチェック（30秒ごと）＋SWとWorkerにタスクデータを送信
   useEffect(()=>{
-    // SWにタスクデータを送信（バックグラウンド通知用）
     const sendToSW = () => {
       if(navigator.serviceWorker && navigator.serviceWorker.controller) {
         navigator.serviceWorker.controller.postMessage({
@@ -1208,11 +1207,17 @@ function DailySchedule({tasks, completeTask, upd}) {
     };
     sendToSW();
     checkReminders(tasks);
+    // Workerにリマインダーデータを同期
+    syncRemindersToWorker(tasks);
     const t = setInterval(()=>{
       sendToSW();
       checkReminders(tasks);
     }, 30000);
-    return ()=>clearInterval(t);
+    // 5分ごとにWorkerに同期
+    const t2 = setInterval(()=>{
+      syncRemindersToWorker(tasks);
+    }, 300000);
+    return ()=>{clearInterval(t);clearInterval(t2);};
   },[tasks]);
 
   // 通知スケジューラー：1分ごとにチェック
@@ -1877,6 +1882,9 @@ function TaskTypeSection({task, upd}) {
   const setAutoReminder = (date, hour, min) => {
     if(!date) return;
     upd(task.id, {reminderSet:true, reminderDate:date, reminderHour:hour, reminderMin:min});
+    // Workerに即座に同期
+    const updated = {...task, reminderSet:true, reminderDate:date, reminderHour:hour, reminderMin:min};
+    syncSingleReminderToWorker(updated);
   };
 
   const t = task;
@@ -2044,8 +2052,10 @@ function ReminderSection({task, upd}) {
 
   const save = () => {
     upd(task.id, {reminderDate:rDate, reminderHour:rHour, reminderMin:rMin, reminderSet:true});
-    // 通知をスケジュール
     scheduleReminder(task.id, task.text, rDate, rHour, rMin);
+    // Workerに即座に同期
+    const updated = {...task, reminderDate:rDate, reminderHour:rHour, reminderMin:rMin, reminderSet:true};
+    syncSingleReminderToWorker(updated);
     setShowPicker(false);
   };
   const clear = () => {
@@ -2132,23 +2142,64 @@ function scheduleReminder(taskId, label, date, hour, min) {
 }
 
 // リマインダーチェッカー（App内useEffectで呼ぶ）
-function checkReminders(tasks) {
-  if(!("Notification" in window)) return;
-  if(Notification.permission === "default") {
-    Notification.requestPermission();
-    return;
-  }
-  if(Notification.permission !== "granted") return;
+const NTFY_TOPIC = "hikari-gtd";
+const WORKER_URL = "https://gtd-reminder-worker.m0423-w0422.workers.dev";
 
-  // Service Worker経由でタスクデータを送り、SW側で通知判定させる
-  if(navigator.serviceWorker && navigator.serviceWorker.controller) {
-    navigator.serviceWorker.controller.postMessage({
-      type: "REMINDER_DATA",
-      tasks: tasks,
+async function sendNtfy(title, body, tag) {
+  try {
+    await fetch("https://ntfy.sh/" + NTFY_TOPIC, {
+      method: "POST",
+      headers: {
+        "Title": encodeURIComponent(title),
+        "Priority": "high",
+        "Tags": tag || "bell",
+        "Content-Type": "text/plain; charset=utf-8",
+      },
+      body: body,
     });
-  }
+  } catch(e) {}
+}
 
-  // フォールバック：アプリが開いている場合は直接通知
+// 単一タスクのリマインダーをWorkerに即座に送信
+async function syncSingleReminderToWorker(task) {
+  try {
+    // 全タスクからリマインダー対象を取得してWorkerに送信
+    const tasks = JSON.parse(localStorage.getItem("gtd_tasks") || "[]");
+    const reminders = tasks.filter(t =>
+      !t.done && (
+        (t.reminderSet && t.reminderDate) ||
+        (t.taskType === "case" && t.nextActionDate)
+      )
+    );
+    // 更新されたタスクをマージ
+    const merged = reminders.filter(r=>r.id!==task.id);
+    merged.push(task);
+    await fetch(WORKER_URL + "/save", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify(merged),
+    });
+  } catch(e) {}
+}
+
+// Workerにリマインダーデータを送信（バックグラウンド通知用）
+async function syncRemindersToWorker(tasks) {
+  try {
+    const reminders = tasks.filter(t =>
+      !t.done && (
+        (t.reminderSet && t.reminderDate) ||
+        (t.taskType === "case" && t.nextActionDate)
+      )
+    );
+    await fetch(WORKER_URL + "/save", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify(reminders),
+    });
+  } catch(e) {}
+}
+
+function checkReminders(tasks) {
   const now = new Date();
   const nowDate = now.toISOString().slice(0,10);
   const nowHour = now.getHours();
@@ -2156,33 +2207,57 @@ function checkReminders(tasks) {
 
   tasks.forEach(t => {
     if(t.done) return;
+
     // 通常リマインダー
     if(t.reminderSet && t.reminderDate) {
       if(t.reminderDate===nowDate && t.reminderHour===nowHour && t.reminderMin===nowMin) {
         const key = "nf_"+t.id+"_"+nowDate+"_"+nowHour+"_"+nowMin;
         if(!localStorage.getItem(key)) {
-          try {
-            new Notification("🔔 "+t.text, {
-              body: String(t.reminderHour).padStart(2,"0")+":"+String(t.reminderMin).padStart(2,"0"),
-              icon:"./icon.png", tag:"reminder_"+t.id, requireInteraction:true,
+          // ntfy.shで通知（iPhone/Android両対応）
+          sendNtfy(
+            "🔔 " + t.text,
+            String(t.reminderHour).padStart(2,"0")+":"+String(t.reminderMin).padStart(2,"0") + " のリマインダーです",
+            "bell"
+          );
+          // ブラウザ通知（アプリが開いている場合）
+          if("Notification" in window && Notification.permission==="granted") {
+            try {
+              new Notification("🔔 "+t.text, {
+                body: String(t.reminderHour).padStart(2,"0")+":"+String(t.reminderMin).padStart(2,"0"),
+                icon:"./icon.png", tag:"reminder_"+t.id, requireInteraction:true,
+              });
+            } catch(e) {}
+          }
+          // SW経由でも通知
+          if(navigator.serviceWorker && navigator.serviceWorker.controller) {
+            navigator.serviceWorker.controller.postMessage({
+              type: "REMINDER_DATA", tasks: tasks,
             });
-          } catch(e) {}
+          }
           localStorage.setItem(key,"1");
         }
       }
     }
+
     // 案件のアクション日時
     if(t.taskType==="case" && t.nextActionDate) {
       const h=t.nextActionHour||9, m=t.nextActionMin||0;
       if(t.nextActionDate===nowDate && h===nowHour && m===nowMin) {
         const key="nf_case_"+t.id+"_"+nowDate+"_"+h+"_"+m;
         if(!localStorage.getItem(key)) {
-          try {
-            new Notification("📋 案件: "+t.text, {
-              body: t.nextAction||"次のアクションの時間です",
-              icon:"./icon.png", tag:"case_"+t.id, requireInteraction:true,
-            });
-          } catch(e) {}
+          sendNtfy(
+            "📋 案件: " + t.text,
+            t.nextAction || "次のアクションの時間です",
+            "spiral_notepad"
+          );
+          if("Notification" in window && Notification.permission==="granted") {
+            try {
+              new Notification("📋 案件: "+t.text, {
+                body: t.nextAction||"次のアクションの時間です",
+                icon:"./icon.png", tag:"case_"+t.id, requireInteraction:true,
+              });
+            } catch(e) {}
+          }
           localStorage.setItem(key,"1");
         }
       }
