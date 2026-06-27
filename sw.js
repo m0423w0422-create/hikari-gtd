@@ -1,4 +1,4 @@
-const CACHE = "gtd-v7";
+const CACHE = "gtd-v8";
 
 self.addEventListener("install", e => {
   e.waitUntil(caches.open(CACHE).then(c => c.addAll(["./","./index.html"])).catch(()=>{}));
