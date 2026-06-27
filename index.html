@@ -1807,32 +1807,18 @@ function CalendarView({tasks, onSelectDate, selectedDate}) {
               {new Date(sel+"T00:00:00").getMonth()+1}月{new Date(sel+"T00:00:00").getDate()}日
               {selTasks.length===0&&<span style={{color:"#C4C7CD",fontWeight:400}}> — なし</span>}
             </div>
-            <div style={{display:"flex",gap:6}}>
-              <button onClick={()=>{
-                  const text=window.prompt(new Date(sel+"T00:00:00").getMonth()+1+"月"+new Date(sel+"T00:00:00").getDate()+"日にタスクを追加");
-                  if(text&&text.trim()){
-                    const t=makeTask({text:text.trim(),category:"work",taskType:"task",taskDate:sel});
-                    onSelectDate && onSelectDate(t);
-                  }
-                }}
-                style={{background:"#1C1C1E",color:"#fff",border:"none",
-                  borderRadius:7,padding:"5px 10px",fontSize:11,fontWeight:700,
-                  cursor:"pointer",fontFamily:"inherit"}}>
-                ＋ タスク
-              </button>
-              <button onClick={()=>{
-                  const text=window.prompt(new Date(sel+"T00:00:00").getMonth()+1+"月"+new Date(sel+"T00:00:00").getDate()+"日に予定を追加");
-                  if(text&&text.trim()){
-                    const t=makeTask({text:text.trim(),category:"work",taskType:"schedule",schedStartDate:sel});
-                    onSelectDate && onSelectDate(t);
-                  }
-                }}
-                style={{background:"#2563EB",color:"#fff",border:"none",
-                  borderRadius:7,padding:"5px 10px",fontSize:11,fontWeight:700,
-                  cursor:"pointer",fontFamily:"inherit"}}>
-                ＋ 予定
-              </button>
-            </div>
+            <button onClick={()=>{
+                const text=window.prompt(new Date(sel+"T00:00:00").getMonth()+1+"月"+new Date(sel+"T00:00:00").getDate()+"日のタスクを追加");
+                if(text&&text.trim()){
+                  const t=makeTask({text:text.trim(),category:"inbox",taskDate:sel});
+                  onSelectDate && onSelectDate(t);
+                }
+              }}
+              style={{background:"#1C1C1E",color:"#fff",border:"none",
+                borderRadius:7,padding:"5px 12px",fontSize:11,fontWeight:700,
+                cursor:"pointer",fontFamily:"inherit"}}>
+              ＋ 追加
+            </button>
           </div>
           {selTasks.map(t=>(
             <div key={t.id} style={{background:"#fff",border:"1.5px solid",
